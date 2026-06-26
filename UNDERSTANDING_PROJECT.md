@@ -146,3 +146,14 @@ The store manages the state of the user's progress. It tracks files uploaded, ro
 * **Core Role**: Shared layout footer.
 * **Key Client-Side Logic**:
   - Displays social icons, contact details, dynamic copyright year, and site map links.
+
+---
+
+## 📁 5. Deployment Configurations
+
+### ⚙️ [netlify.toml](file:///c:/Users/Dev/.gemini/antigravity/scratch/skillgap-bridge/netlify.toml)
+* **Purpose**: Build configuration file for Netlify hosting.
+* **Functionality**:
+  - Specifies the build command `npm run build` and sets the publish directory to `.next`.
+  - Integrates the `@netlify/plugin-nextjs` package to compile Next.js serverless adapters and routes automatically.
+
