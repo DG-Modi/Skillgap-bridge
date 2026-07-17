@@ -85,7 +85,6 @@ export default function AnalyzePage() {
   } = useStore();
 
   const [jdText, setJdText] = useState('');
-  const [roleInput, setRoleInput] = useState('');
   const [activeStepIndex, setActiveStepIndex] = useState(0);
   const [error, setError] = useState<string | null>(null);
   const [isParsingFile, setIsParsingFile] = useState(false);
@@ -98,8 +97,8 @@ export default function AnalyzePage() {
       setError('Please upload your resume or paste resume text first.');
       return;
     }
-    if (!roleInput) {
-      setError('Please specify your target job role.');
+    if (!jdText) {
+      setError('Please specify the job description.');
       return;
     }
 
@@ -118,14 +117,11 @@ export default function AnalyzePage() {
     }, 1200);
 
     try {
-      setTargetRole(roleInput);
-      
       const response = await fetch('/api/analyze', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           resumeText,
-          jobRole: roleInput,
           jobDescription: jdText
         })
       });
@@ -136,6 +132,9 @@ export default function AnalyzePage() {
 
       const data = await response.json();
       
+      if (data.analysis?.jobRole) {
+        setTargetRole(data.analysis.jobRole);
+      }
       setAnalysisResult(data.analysis);
       if (data.interviewQuestions) setInterviewQuestions(data.interviewQuestions);
       if (data.recommendations) setRecommendations(data.recommendations);
@@ -414,29 +413,16 @@ export default function AnalyzePage() {
                   />
                 </div>
 
-                {/* Target Role & Job Description Inputs */}
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-                  <div className="space-y-2">
-                    <label className="block text-sm font-bold text-slate-800">2. Target Job Role</label>
-                    <input
-                      type="text"
-                      value={roleInput}
-                      onChange={(e) => setRoleInput(e.target.value)}
-                      placeholder="e.g. Full Stack Engineer, Data Scientist"
-                      className="w-full bg-slate-50/20 border border-slate-200 rounded-xl p-4 text-sm focus:border-primary focus:ring-1 focus:ring-primary outline-hidden font-medium"
-                    />
-                  </div>
-
-                  <div className="space-y-2">
-                    <label className="block text-sm font-bold text-slate-800">3. Job Description (Optional)</label>
-                    <textarea
-                      value={jdText}
-                      onChange={(e) => setJdText(e.target.value)}
-                      placeholder="Paste target job description details to calculate precision scores..."
-                      rows={4}
-                      className="w-full bg-slate-50/20 border border-slate-200 rounded-xl p-4 text-sm focus:border-primary focus:ring-1 focus:ring-primary outline-hidden"
-                    />
-                  </div>
+                {/* Job Description Input */}
+                <div className="space-y-2">
+                  <label className="block text-sm font-bold text-slate-800">2. Job Description</label>
+                  <textarea
+                    value={jdText}
+                    onChange={(e) => setJdText(e.target.value)}
+                    placeholder="Paste target job description details to analyze skill gaps..."
+                    rows={5}
+                    className="w-full bg-slate-50/20 border border-slate-200 rounded-xl p-4 text-sm focus:border-primary focus:ring-1 focus:ring-primary outline-hidden"
+                  />
                 </div>
               </div>
 

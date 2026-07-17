@@ -1,11 +1,12 @@
 import { NextResponse } from 'next/server';
+import { prisma } from '@/lib/prisma';
 
 export async function POST(request: Request) {
   try {
-    const { resumeText, jobRole, jobDescription } = await request.json();
+    const { resumeText, jobDescription } = await request.json();
 
-    if (!resumeText || !jobRole) {
-      return NextResponse.json({ error: 'Resume text and job role are required' }, { status: 400 });
+    if (!resumeText || !jobDescription) {
+      return NextResponse.json({ error: 'Resume text and job description are required' }, { status: 400 });
     }
 
     const apiKey = process.env.GROQ_API_KEY;
@@ -24,15 +25,17 @@ export async function POST(request: Request) {
           messages: [
             {
               role: 'system',
-              content: `You are an expert HR and technical recruiter. Analyze the user's resume against the target job role and optional job description.
+              content: `You are an expert HR and technical recruiter. Analyze the user's resume against the provided job description.
+              Extract the target job role/title from the job description and return it in the JSON response as "jobRole" (e.g., "Frontend Developer", "Data Scientist", "Project Manager").
               Return a JSON object containing a skill gap analysis, interview questions, and study recommendations.
-              Create exactly 5 interview questions ranging from basic to advanced/high-level difficulty. If a job description is provided, derive questions directly from the specific requirements of the job description, otherwise use the job role. The interview questions must cover different difficulties (e.g. at least one Basic, one Intermediate, and one Advanced).
+              Create exactly 5 interview questions ranging from basic to advanced/high-level difficulty derived directly from the specific requirements of the job description. The interview questions must cover different difficulties (e.g. at least one Basic, one Intermediate, and one Advanced).
               For study recommendations, specifically prioritize recommending high-quality FREE courses, free tutorial websites (e.g. freeCodeCamp, MDN Web Docs, YouTube, Khan Academy, Coursera Free Audit, W3Schools, or official documentation), and open-source materials that provide free learning resources.
               For all link fields, you must generate a valid, active, and public URL. Do NOT use fake paths or sub-URLs. If a specific tutorial or certification link is unknown, use a root domain of a popular free learning site (e.g. 'https://www.youtube.com', 'https://www.freecodecamp.org', 'https://developer.mozilla.org', 'https://www.coursera.org', etc.). For YouTube search links, use a format like: 'https://www.youtube.com/results?search_query=topic_name' where topic_name is URL-encoded. This ensures links always work!
               For certification recommendations, prioritize recommending FREE certification courses, platforms that issue free certificates/badges (e.g., freeCodeCamp certifications, AWS Educate, Salesforce Trailhead, Cognitive Class IBM, Oracle Free Cloud Training, or Coursera courses with free audit certificates), and specify 'Free' in the cost field. Always include a valid link to the certification program.
               Strictly use the following JSON schema:
               {
                 "analysis": {
+                  "jobRole": string,
                   "matchPercentage": number,
                   "matchedSkills": string[],
                   "missingSkills": string[],
@@ -65,7 +68,7 @@ export async function POST(request: Request) {
             },
             {
               role: 'user',
-              content: `Resume: ${resumeText}\nTarget Role: ${jobRole}\nJob Description Context: ${jobDescription || 'None provided'}`
+              content: `Resume: ${resumeText}\nJob Description: ${jobDescription}`
             }
           ]
         })
@@ -101,125 +104,112 @@ export async function POST(request: Request) {
           console.error('Error sanitizing recommendation links:', sanitizeErr);
         }
 
+        // Save into MySQL
+        try {
+          const matchScore = aiResult.analysis?.matchPercentage ?? 0;
+          const matchedSkillsStr = Array.isArray(aiResult.analysis?.matchedSkills)
+            ? aiResult.analysis.matchedSkills.join(', ')
+            : '';
+          await prisma.analysisDataset.create({
+            data: {
+              resumeSummary: matchedSkillsStr,
+              jobDescription: jobDescription,
+              matchScore: typeof matchScore === 'number' ? matchScore : parseInt(matchScore) || 0,
+            },
+          });
+        } catch (dbErr) {
+          console.error('Error saving to MySQL in AI path:', dbErr);
+        }
+
         return NextResponse.json(aiResult);
       } else {
         console.warn('Groq API responded with error status:', groqResponse.status);
       }
     }
 
-    // High fidelity Fallback Mock Data based on role inputs
-    console.log('Serving dynamic high-fidelity fallback mock data for:', jobRole);
+    // Heuristic to extract a clean job title from the first line or beginning of the job description
+    const getInferredJobRole = (jd: string): string => {
+      const firstLine = jd.split('\n')[0].trim();
+      if (firstLine.length > 3 && firstLine.length < 60) {
+        return firstLine.replace(/[^a-zA-Z0-9\s\-\#\.\+]/g, '').trim();
+      }
+      const words = firstLine.split(/\s+/).slice(0, 5).join(' ');
+      return words.replace(/[^a-zA-Z0-9\s\-\#\.\+]/g, '').trim() || 'Software Engineer';
+    };
 
-    const roleClean = jobRole.trim();
+    const inferredJobRole = getInferredJobRole(jobDescription);
+    console.log('Serving dynamic high-fidelity fallback mock data for inferred role:', inferredJobRole);
+
+    const roleClean = inferredJobRole;
     const roleLower = roleClean.toLowerCase();
 
     const roleWords = roleClean.split(/\s+/).filter((w: string | any[]) => w.length > 3);
     const primaryKeyword = roleWords[0] || 'Professional';
     const secondaryKeyword = roleWords[1] || 'Practice';
 
-    // Default general fallbacks
-    let matchedSkills = ['Communication', 'Time Management', 'Collaboration', 'Problem Solving', 'Project Organization'];
-    let missingSkills = ['Advanced Analytics', 'Budget Optimization', 'Strategy Development', 'Client Relationship Management'];
+    // 1. Curate skills and words dynamically from inputs
+    const jdSkills = getSkillsFromText(jobDescription);
+    const resumeSkills = getSkillsFromText(resumeText);
+
+    let baseMatchedSkills = jdSkills.filter(skill => resumeSkills.includes(skill));
+    let baseMissingSkills = jdSkills.filter(skill => !resumeSkills.includes(skill));
+
+    // 2. Supplement with unique professional keywords/nouns from texts to ensure a rich list of 5-6 skills
+    const getCleanWords = (text: string) => {
+      return text.toLowerCase()
+        .replace(/[^a-zA-Z0-9\s]/g, ' ')
+        .split(/\s+/)
+        .filter(w => w.length > 3 && !STOP_WORDS.has(w));
+    };
+
+    const jdWords = Array.from(new Set(getCleanWords(jobDescription)));
+    const resumeWords = getCleanWords(resumeText);
+
+    const capitalize = (w: string) => w.charAt(0).toUpperCase() + w.slice(1);
+    const formatSkillName = (s: string) => s.split(' ').map(capitalize).join(' ');
+
+    const matchedWords = jdWords.filter(word => resumeWords.includes(word)).map(capitalize);
+    const missingWords = jdWords.filter(word => !resumeWords.includes(word)).map(capitalize);
+
+    let matchedSkills = Array.from(new Set([
+      ...baseMatchedSkills.map(formatSkillName),
+      ...matchedWords
+    ])).slice(0, 6);
+
+    let missingSkills = Array.from(new Set([
+      ...baseMissingSkills.map(formatSkillName),
+      ...missingWords
+    ])).slice(0, 6);
+
+    // Fallback safety values if empty
+    if (matchedSkills.length === 0) {
+      matchedSkills = ['Communication', 'Documentation', 'Collaboration'];
+    }
+    if (missingSkills.length === 0) {
+      missingSkills = ['Specialized Tools', 'Process Optimization', 'Advanced Methodologies'];
+    }
+
+    // Calculate a dynamic real-time score based on Jaccard similarity of input texts
+    const similarity = calculateJaccardSimilarity(resumeText, jobDescription);
+    // Map Jaccard similarity to a score between 35% and 95%
+    let calculatedMatch = Math.round(calculateJaccardSimilarity(resumeText, jobDescription) * 220);
+    if (jdSkills.length > 0) {
+      calculatedMatch = Math.round((baseMatchedSkills.length / jdSkills.length) * 100);
+    }
+    calculatedMatch = Math.max(35, Math.min(calculatedMatch, 95));
+
     let breakdown = [
-      { category: `${primaryKeyword} Fundamentals`, score: 70 },
-      { category: `${secondaryKeyword} Operations` === `${primaryKeyword} Operations` ? 'Operational Execution' : `${secondaryKeyword} Operations`, score: 65 },
-      { category: 'Strategic Planning', score: 50 },
-      { category: 'Digital Tools & Tech', score: 45 }
+      { category: `${primaryKeyword} Core Competencies`, score: Math.min(95, calculatedMatch + 8) },
+      { category: `${secondaryKeyword} Operations` === `${primaryKeyword} Operations` ? 'Operational Execution' : `${secondaryKeyword} Operations`, score: Math.min(95, calculatedMatch + 3) },
+      { category: 'Role Alignment', score: Math.max(30, calculatedMatch - 12) },
+      { category: 'Required Tools & Skills', score: Math.max(30, calculatedMatch - 5) }
     ];
+
     let actionPlan = [
       `Obtain professional credentials or certification in ${roleClean} concepts.`,
       `Design and execute a trial project focusing on closing gaps in ${missingSkills[0]} and ${missingSkills[1]}.`,
       `Attend advanced training sessions or webinars in modern tools for ${roleClean}.`
     ];
-
-    // Customize based on common domains
-    if (roleLower.includes('front') || roleLower.includes('react') || roleLower.includes('ui') || roleLower.includes('web') || roleLower.includes('developer') || roleLower.includes('engineer') || roleLower.includes('software') || roleLower.includes('coding') || roleLower.includes('dev')) {
-      matchedSkills = ['Git', 'TypeScript', 'Jest', 'Agile Methodologies', 'JavaScript', 'HTML5 & CSS3'];
-      missingSkills = ['Kubernetes & Docker', 'AWS Cloud Services', 'GraphQL APIs', 'Redis Caching', 'System Design (Microservices)'];
-      breakdown = [
-        { category: 'Core Development', score: 85 },
-        { category: 'System Architecture', score: 55 },
-        { category: 'DevOps & Deployment', score: 40 },
-        { category: 'Testing & Quality', score: 70 }
-      ];
-      actionPlan = [
-        'Learn containerization using Docker and orchestration with Kubernetes.',
-        'Study system design principles, focusing on microservices caching using Redis.',
-        'Build a cloud-native project deployed on AWS using GitHub Actions for CI/CD.'
-      ];
-    } else if (roleLower.includes('market') || roleLower.includes('sale') || roleLower.includes('brand') || roleLower.includes('seo') || roleLower.includes('growth')) {
-      matchedSkills = ['Content Strategy', 'Social Media Management', 'Copywriting', 'Public Relations', 'Google Analytics'];
-      missingSkills = ['Search Engine Optimization (SEO) Audit', 'Paid Ads Campaign Management', 'SQL for Data Analysis', 'A/B Testing Methodologies', 'CRM Automation'];
-      breakdown = [
-        { category: 'Campaign Management', score: 80 },
-        { category: 'Data Analysis', score: 50 },
-        { category: 'Content & Branding', score: 85 },
-        { category: 'Marketing Tech (MarTech)', score: 40 }
-      ];
-      actionPlan = [
-        'Complete Google Ads certification and manage a test budget campaign.',
-        'Learn basic SQL queries to extract campaign data directly from database tables.',
-        'Set up automated email drip campaigns using HubSpot or Marketo.'
-      ];
-    } else if (roleLower.includes('data') || roleLower.includes('analyst') || roleLower.includes('science') || roleLower.includes('ml') || roleLower.includes('ai')) {
-      matchedSkills = ['Python Programming', 'SQL Queries', 'Data Visualization', 'Pandas & NumPy', 'Excel'];
-      missingSkills = ['Machine Learning Pipelines', 'Big Data Stack (Spark/Hadoop)', 'Model Deployment (APIs)', 'Statistical Hypothesis Testing', 'Data Warehousing (Snowflake)'];
-      breakdown = [
-        { category: 'Statistical Analysis', score: 75 },
-        { category: 'Programming & Data Prep', score: 85 },
-        { category: 'Machine Learning', score: 40 },
-        { category: 'Data Infrastructure', score: 50 }
-      ];
-      actionPlan = [
-        'Build and deploy a machine learning model as a REST API using FastAPI.',
-        'Complete a training course on big data processing with Apache Spark.',
-        'Implement automated data pipelines using Apache Airflow and Snowflake.'
-      ];
-    } else if (roleLower.includes('hr') || roleLower.includes('human') || roleLower.includes('recruit') || roleLower.includes('talent')) {
-      matchedSkills = ['Interpersonal Communication', 'Applicant Tracking Systems', 'Sourcing Techniques', 'Onboarding Procedures'];
-      missingSkills = ['Compensation & Benefits Analysis', 'HR Policy Compliance', 'Employee Relations Mediation', 'Talent Analytics', 'Diversity & Inclusion Strategy'];
-      breakdown = [
-        { category: 'Sourcing & Recruitment', score: 90 },
-        { category: 'HR Operations', score: 65 },
-        { category: 'Employee Relations', score: 50 },
-        { category: 'Strategic HR Analytics', score: 40 }
-      ];
-      actionPlan = [
-        'Analyze company attrition trends using data analytics software.',
-        'Obtain a SHRM (Society for Human Resource Management) certification.',
-        'Develop a structured Diversity, Equity, and Inclusion (DEI) program template.'
-      ];
-    } else if (roleLower.includes('finance') || roleLower.includes('account') || roleLower.includes('audit') || roleLower.includes('tax')) {
-      matchedSkills = ['Financial Reporting', 'Excel Spreadsheets', 'General Ledger', 'Accounts Payable/Receivable'];
-      missingSkills = ['Financial Modeling & Forecasting', 'Tax Compliance & Strategy', 'Corporate Finance Management', 'Internal Auditing', 'ERP Systems (SAP/Oracle)'];
-      breakdown = [
-        { category: 'Accounting Foundations', score: 85 },
-        { category: 'Forecasting & Strategy', score: 45 },
-        { category: 'Compliance & Audit', score: 60 },
-        { category: 'ERP & Systems', score: 50 }
-      ];
-      actionPlan = [
-        'Build a comprehensive corporate financial model forecasting 3-year statements.',
-        'Attend workshops on current tax compliance guidelines and regulatory codes.',
-        'Gain certification in SAP Financial Accounting modules.'
-      ];
-    } else if (roleLower.includes('design') || roleLower.includes('ux') || roleLower.includes('ui') || roleLower.includes('graphic') || roleLower.includes('product')) {
-      matchedSkills = ['Figma', 'Adobe Creative Suite', 'Wireframing', 'Color Theory', 'Typography'];
-      missingSkills = ['User Research Methods', 'Interactive Prototyping', 'Design Systems Scaling', 'Frontend Basics (HTML/CSS)', 'Usability Testing & Analytics'];
-      breakdown = [
-        { category: 'Visual Design', score: 90 },
-        { category: 'Interaction Design', score: 60 },
-        { category: 'User Research', score: 45 },
-        { category: 'Cross-functional Collaboration', score: 70 }
-      ];
-      actionPlan = [
-        'Plan and conduct usability tests with 5+ real users for a mock product.',
-        'Build a scalable design system in Figma with variables, components, and auto-layout.',
-        'Take an introductory HTML/CSS course to collaborate better with developers.'
-      ];
-    }
-
-    const calculatedMatch = Math.round(breakdown.reduce((sum, cat) => sum + cat.score, 0) / breakdown.length);
 
     // Mock interview questions matching the gaps, with varying difficulties
     const interviewQuestions = [
@@ -239,7 +229,7 @@ export async function POST(request: Request) {
       },
       {
         id: 3,
-        question: `Describe a time when you had a major disagreement with a stakeholder or client regarding a ${roleClean} project strategy. How did you negotiate and align?`,
+        question: `Describe a time when you had a major disagreement regarding a ${roleClean} project strategy. How did you negotiate and align?`,
         type: 'behavioral' as const,
         difficulty: 'Intermediate' as const,
         idealAnswer: `I focused on active listening to understand their underlying concerns, compiled data-driven examples to back my recommendation, presented options with transparent trade-offs, and agreed on a collaborative trial approach with clear success metrics.`
@@ -266,14 +256,14 @@ export async function POST(request: Request) {
         {
           id: 'mock-c-1',
           title: `Free Interactive Tutorial: ${missingSkills[0]}`,
-          platform: 'freeCodeCamp (Free)',
+          platform: 'freeCodeCamp (Free) / YouTube',
           duration: '10 hours',
           skillsAddressed: [missingSkills[0]],
-          link: 'https://www.freecodecamp.org'
+          link: `https://www.youtube.com/results?search_query=${encodeURIComponent(missingSkills[0] + ' Tutorial')}`
         },
         {
           id: 'mock-c-2',
-          title: `${missingSkills[1] || 'Strategic Management'} Foundations (Free Audit)`,
+          title: `${missingSkills[1] || 'Strategic Management'} Foundations`,
           platform: 'Coursera (Free Audit) / YouTube',
           duration: '15 hours',
           skillsAddressed: [missingSkills[1] || 'Strategy'],
@@ -283,10 +273,10 @@ export async function POST(request: Request) {
       projects: [
         {
           id: 'mock-p-1',
-          title: `${roleClean} Optimization Project`,
+          title: `${roleClean} Practical Case Study`,
           description: `Create a professional portfolio-ready case study or sandbox implementation showcasing solutions for ${missingSkills[0]} and ${missingSkills[1]}.`,
           difficulty: 'Intermediate' as const,
-          techStack: [matchedSkills[0], matchedSkills[1], missingSkills[0]],
+          techStack: [matchedSkills[0] || 'Core', matchedSkills[1] || 'Process', missingSkills[0]],
           keyFeatures: ['Detailed roadmap planning', 'Metric scorecard design', 'Execution review templates'],
           link: `https://github.com/search?q=${encodeURIComponent(roleClean + ' Project')}`
         }
@@ -294,17 +284,31 @@ export async function POST(request: Request) {
       certifications: [
         {
           id: 'mock-cert-1',
-          title: `freeCodeCamp Full Stack Developer Certification (100% Free)`,
-          issuer: 'freeCodeCamp',
-          cost: 'Free',
-          value: `Demonstrates verified knowledge of ${missingSkills[0]} and related execution frameworks through hands-on coding challenges.`,
-          link: 'https://www.freecodecamp.org/learn'
+          title: `${roleClean} Advanced Professional Certification`,
+          issuer: 'Industry Association',
+          cost: 'Free Audit Available',
+          value: `Demonstrates verified knowledge of ${missingSkills[0]} and related execution frameworks.`,
+          link: `https://www.google.com/search?q=${encodeURIComponent(roleClean + ' Certification')}`
         }
       ]
     };
 
+    // Save into MySQL
+    try {
+      await prisma.analysisDataset.create({
+        data: {
+          resumeSummary: matchedSkills.join(', '),
+          jobDescription: jobDescription,
+          matchScore: calculatedMatch,
+        },
+      });
+    } catch (dbErr) {
+      console.error('Error saving to MySQL in fallback path:', dbErr);
+    }
+
     return NextResponse.json({
       analysis: {
+        jobRole: inferredJobRole,
         matchPercentage: calculatedMatch,
         matchedSkills,
         missingSkills,
@@ -314,6 +318,7 @@ export async function POST(request: Request) {
       interviewQuestions,
       recommendations
     });
+
   } catch (err: any) {
     console.error('API Error in /api/analyze:', err);
     return NextResponse.json({ error: err.message || 'Internal server error' }, { status: 500 });
@@ -370,5 +375,47 @@ function sanitizeLink(url: string, title: string, platform: string): string {
   }
 
   return url || `https://www.google.com/search?q=${encodeURIComponent(platform + ' ' + title)}`;
+}
+
+// Curated skills dictionary for local analysis
+const SKILLS_DATABASE = [
+  'javascript', 'typescript', 'python', 'java', 'kotlin', 'swift', 'go', 'golang', 'rust', 'c++', 'c#', 'php', 'ruby', 'sql', 'html', 'css',
+  'react', 'next.js', 'nextjs', 'vue', 'angular', 'node.js', 'nodejs', 'express', 'django', 'flask', 'fastapi', 'spring boot', 'spring', 'laravel', 'pandas', 'numpy', 'scikit-learn', 'tensorflow', 'pytorch', 'keras', 'tailwind', 'bootstrap',
+  'mysql', 'postgresql', 'postgres', 'mongodb', 'redis', 'cassandra', 'elasticsearch', 'sqlite', 'mariadb', 'dynamodb',
+  'aws', 'azure', 'gcp', 'docker', 'kubernetes', 'jenkins', 'git', 'github', 'gitlab', 'ci/cd', 'terraform', 'ansible',
+  'agile', 'scrum', 'system design', 'microservices', 'graphql', 'rest api', 'restful', 'machine learning', 'deep learning', 'nlp', 'computer vision', 'data science', 'ai', 'artificial intelligence', 'data analysis', 'big data', 'spark', 'hadoop', 'ui/ux', 'seo', 'marketing', 'sales', 'hr', 'recruiting', 'finance', 'accounting', 'project management',
+  'communication', 'leadership', 'problem solving', 'teamwork', 'analytical', 'time management', 'collaboration'
+];
+
+// Curated stop words list
+const STOP_WORDS = new Set([
+  'a', 'about', 'above', 'after', 'again', 'against', 'all', 'am', 'an', 'and', 'any', 'are', 'arent', 'as', 'at', 'be', 'because', 'been', 'before', 'being', 'below', 'between', 'both', 'but', 'by', 'cant', 'cannot', 'could', 'couldnt', 'did', 'didnt', 'do', 'does', 'doesnt', 'doing', 'dont', 'down', 'during', 'each', 'few', 'for', 'from', 'further', 'had', 'hadnt', 'has', 'hasnt', 'have', 'havent', 'having', 'he', 'hed', 'hell', 'hes', 'her', 'here', 'heres', 'hers', 'herself', 'him', 'himself', 'his', 'how', 'hows', 'i', 'id', 'ill', 'im', 'ive', 'if', 'in', 'into', 'is', 'isnt', 'it', 'its', 'itself', 'lets', 'me', 'more', 'most', 'mustnt', 'my', 'myself', 'no', 'nor', 'not', 'of', 'off', 'on', 'once', 'only', 'or', 'other', 'ought', 'our', 'ours', 'ourselves', 'out', 'over', 'own', 'same', 'shant', 'she', 'shed', 'shell', 'shes', 'should', 'shouldnt', 'so', 'some', 'such', 'than', 'that', 'thats', 'the', 'their', 'theirs', 'them', 'themselves', 'then', 'there', 'theres', 'these', 'they', 'theyd', 'theyll', 'theyre', 'theyve', 'this', 'those', 'through', 'to', 'too', 'under', 'until', 'up', 'very', 'was', 'wasnt', 'we', 'wed', 'well', 'were', 'weve', 'werent', 'what', 'whats', 'when', 'whens', 'where', 'wheres', 'which', 'while', 'who', 'whos', 'whom', 'why', 'whys', 'with', 'wont', 'would', 'wouldnt', 'you', 'youd', 'youll', 'youre', 'youve', 'your', 'yours', 'yourself', 'yourselves'
+]);
+
+function getSkillsFromText(text: string): string[] {
+  const lower = text.toLowerCase();
+  return SKILLS_DATABASE.filter(skill => {
+    const escaped = skill.replace(/[-\/\\^$*+?.()|[\]{}]/g, '\\$&');
+    const regex = new RegExp(`\\b${escaped}\\b`, 'i');
+    return regex.test(lower);
+  });
+}
+
+function calculateJaccardSimilarity(textA: string, textB: string): number {
+  const getCleanWords = (text: string) => {
+    return new Set(
+      text.toLowerCase()
+        .replace(/[^a-zA-Z0-9\s]/g, ' ')
+        .split(/\s+/)
+        .filter(w => w.length > 2 && !STOP_WORDS.has(w))
+    );
+  };
+  const setA = getCleanWords(textA);
+  const setB = getCleanWords(textB);
+  if (setA.size === 0 || setB.size === 0) return 0;
+  
+  const intersection = new Set([...setA].filter(x => setB.has(x)));
+  const union = new Set([...setA, ...setB]);
+  return intersection.size / union.size;
 }
 

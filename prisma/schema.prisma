@@ -1,0 +1,19 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "mysql"
+}
+
+model AnalysisDataset {
+  id               Int      @id @default(autoincrement())
+  createdAt        DateTime @default(now())
+
+  resumeSummary    String   @db.LongText
+  jobDescription   String   @db.LongText
+
+  matchScore       Int
+
+  @@map("analysis_dataset")
+}
