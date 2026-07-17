@@ -110,12 +110,17 @@ export async function POST(request: Request) {
           const matchedSkillsStr = Array.isArray(aiResult.analysis?.matchedSkills)
             ? aiResult.analysis.matchedSkills.join(', ')
             : '';
+          const indiaTime = new Date(
+            new Date().toLocaleString("en-US", {
+              timeZone: "Asia/Kolkata",
+            })
+          );
           await prisma.analysisDataset.create({
             data: {
+              createdAt: indiaTime,
               resumeSummary: matchedSkillsStr,
               jobDescription: jobDescription,
               matchScore: typeof matchScore === 'number' ? matchScore : parseInt(matchScore) || 0,
-              createdAt: new Date(),
             },
           });
         } catch (dbErr) {
@@ -296,12 +301,17 @@ export async function POST(request: Request) {
 
     // Save into MySQL
     try {
+      const indiaTime = new Date(
+        new Date().toLocaleString("en-US", {
+          timeZone: "Asia/Kolkata",
+        })
+      );
       await prisma.analysisDataset.create({
         data: {
+          createdAt: indiaTime,
           resumeSummary: matchedSkills.join(', '),
           jobDescription: jobDescription,
           matchScore: calculatedMatch,
-          createdAt: new Date(),
         },
       });
     } catch (dbErr) {
