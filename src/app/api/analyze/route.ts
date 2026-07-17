@@ -115,12 +115,16 @@ export async function POST(request: Request) {
               timeZone: "Asia/Kolkata",
             })
           );
+
           await prisma.analysisDataset.create({
             data: {
               createdAt: indiaTime,
               resumeSummary: matchedSkillsStr,
               jobDescription: jobDescription,
-              matchScore: typeof matchScore === 'number' ? matchScore : parseInt(matchScore) || 0,
+              matchScore:
+                typeof matchScore === "number"
+                  ? matchScore
+                  : parseInt(matchScore),
             },
           });
         } catch (dbErr) {
