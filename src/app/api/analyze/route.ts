@@ -419,3 +419,6 @@ function calculateJaccardSimilarity(textA: string, textB: string): number {
   return intersection.size / union.size;
 }
 
+// Trigger redeployment on Netlify
+
+
