@@ -115,6 +115,7 @@ export async function POST(request: Request) {
               resumeSummary: matchedSkillsStr,
               jobDescription: jobDescription,
               matchScore: typeof matchScore === 'number' ? matchScore : parseInt(matchScore) || 0,
+              createdAt: new Date(),
             },
           });
         } catch (dbErr) {
@@ -300,6 +301,7 @@ export async function POST(request: Request) {
           resumeSummary: matchedSkills.join(', '),
           jobDescription: jobDescription,
           matchScore: calculatedMatch,
+          createdAt: new Date(),
         },
       });
     } catch (dbErr) {
