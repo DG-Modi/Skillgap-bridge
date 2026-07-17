@@ -8,11 +8,10 @@ datasource db {
 
 model AnalysisDataset {
   id               Int      @id @default(autoincrement())
-  createdAt        DateTime @default(now())
+  createdAt        DateTime
 
   resumeSummary    String   @db.LongText
   jobDescription   String   @db.LongText
-
   matchScore       Int
 
   @@map("analysis_dataset")
