@@ -1,4 +1,4 @@
-# SkillSync AI 🚀 (SkillGap Bridge)
+# SkillSync AI 🚀
 
 SkillSync AI is a professional, AI-powered Next.js application designed to help users identify their skill gaps against specific target job roles, practice custom mock interviews, and receive tailored learning recommendations.
 
